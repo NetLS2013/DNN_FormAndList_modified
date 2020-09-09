@@ -1,0 +1,795 @@
+﻿    /************************************************************/
+    /*****       SqlDataProvider                            *****/
+    /*****       Install/Upgrade for UserDefinedTable 6.0.6 *****/
+    /*****                                                  *****/
+    /*****                                                  *****/
+    /***** Note: To manually execute this script you must   *****/
+    /*****       perform a search AND replace operation     *****/
+    /*****       for {databaseOwner} AND {objectQualifier}  *****/
+    /*****       or use 'SQL' FROM Host Menu AND run this.  *****/
+    /*****                                                  *****/
+    /*****                                                  *****/
+    /************************************************************/
+
+
+
+begin transaction
+/* This code adds a dummy text column to the table, clears the 'text in row' table option
+  then removes the dummy column.  This is to allow removal of the 'text in row' option
+  which is not supported on SQL Azure */
+
+ALTER TABLE {databaseOwner}[{objectQualifier}UserDefinedData] ADD [dummy] text;
+EXECUTE sp_tableoption '{databaseOwner}[{objectQualifier}UserDefinedData]', 'text in row', 'OFF';
+ALTER TABLE {databaseOwner}[{objectQualifier}UserDefinedData] DROP COLUMN [dummy];
+
+commit transaction
+GO
+
+
+/************************************************************/
+/*****        NetLS additional code                     *****/
+/************************************************************/
+
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'{databaseOwner}{objectQualifier}SP_UserDefinedTable_GetActiveHRs') AND TYPE IN (N'P', N'PC'))
+DROP PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetActiveHRs
+GO
+
+CREATE PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetActiveHRs
+
+@ListOfHrsModuleId INT,
+@NameFieldId INT,
+@ActiveFieldId INT
+
+AS
+
+SELECT
+	HrIdResult.UserDefinedRowId AS Id,
+	HrNameResult.FieldValue AS Name,
+	HrActiveResult.FieldValue AS Active
+FROM
+	(SELECT *
+	FROM {databaseOwner}{objectQualifier}UserDefinedRows
+	WHERE ModuleId=@ListOfHrsModuleId) HrIdResult
+INNER JOIN
+	(SELECT *
+	FROM {databaseOwner}{objectQualifier}UserDefinedData
+	WHERE UserDefinedFieldId=@NameFieldId) HrNameResult
+ON HrIdResult.UserDefinedRowId = HrNameResult.UserDefinedRowId
+INNER JOIN
+	(SELECT *
+	FROM {databaseOwner}{objectQualifier}UserDefinedData
+	WHERE UserDefinedFieldId=@ActiveFieldId) HrActiveResult
+ON HrNameResult.UserDefinedRowId = HrActiveResult.UserDefinedRowId
+WHERE HrActiveResult.FieldValue='True';
+
+GO
+
+/************************************************************/
+
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'{databaseOwner}{objectQualifier}SP_UserDefinedTable_UpdateActiveHRsInDropdownlist') AND TYPE IN (N'P', N'PC'))
+DROP PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_UpdateActiveHRsInDropdownlist
+GO
+
+CREATE PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_UpdateActiveHRsInDropdownlist
+
+@ListOfHrsModuleId INT,
+@HrNameFieldId INT,
+@ActiveFieldId INT,
+@Target_HrFieldId INT
+
+AS
+
+-- Update list of active HRs in dropdown list of column HR in list of vacancies
+DECLARE @HRsDropDownListValues varchar(MAX);
+SET @HRsDropDownListValues = 'Default|0';
+
+SELECT
+		@HRsDropDownListValues = CONCAT(@HRsDropDownListValues, ';', Name, '|', Id)
+	FROM
+		(SELECT
+			HrIdResult.UserDefinedRowId AS Id,
+			HrNameResult.FieldValue AS Name,
+			HrActiveResult.FieldValue AS Active
+		FROM
+			(SELECT *
+			FROM {databaseOwner}{objectQualifier}UserDefinedRows
+			WHERE ModuleId=@ListOfHrsModuleId) HrIdResult
+		INNER JOIN
+			(SELECT *
+			FROM {databaseOwner}{objectQualifier}UserDefinedData
+			WHERE UserDefinedFieldId=@HrNameFieldId) HrNameResult
+		ON HrIdResult.UserDefinedRowId = HrNameResult.UserDefinedRowId
+		INNER JOIN
+			(SELECT *
+			FROM {databaseOwner}{objectQualifier}UserDefinedData
+			WHERE UserDefinedFieldId=@ActiveFieldId) HrActiveResult
+		ON HrNameResult.UserDefinedRowId = HrActiveResult.UserDefinedRowId
+		WHERE HrActiveResult.FieldValue='True') as ActiveHRs;
+
+
+-- Update list of HRs in dropdownlist values of target module
+UPDATE {databaseOwner}{objectQualifier}UserDefinedFields
+SET InputSettings = @HRsDropDownListValues
+WHERE UserDefinedFieldId = @Target_HrFieldId;
+
+-- Set Default HR instead of inactive one
+UPDATE Target_HrIdResult
+SET
+	Target_HrIdResult.FieldValue = 0
+FROM
+	(SELECT *
+	FROM {databaseOwner}{objectQualifier}UserDefinedData
+	WHERE UserDefinedFieldId=@Target_HrFieldId) Target_HrIdResult
+INNER JOIN
+	(SELECT *
+	FROM {databaseOwner}{objectQualifier}UserDefinedData
+	WHERE UserDefinedFieldId=@ActiveFieldId) HrInactiveResult
+ON Target_HrIdResult.FieldValue = HrInactiveResult.UserDefinedRowId
+WHERE HrInactiveResult.FieldValue='False';
+
+-- Set Default HR instead of inactive one
+UPDATE Target_HrIdResult
+SET
+	Target_HrIdResult.FieldValue = 0
+FROM
+	(SELECT *
+	FROM {databaseOwner}{objectQualifier}UserDefinedData
+	WHERE UserDefinedFieldId=@Target_HrFieldId) Target_HrIdResult
+LEFT JOIN
+	(SELECT *, 1 AS HrExists
+	FROM {databaseOwner}{objectQualifier}UserDefinedData
+	WHERE UserDefinedFieldId=@HrNameFieldId) HrExistsResult
+ON Target_HrIdResult.FieldValue = HrExistsResult.UserDefinedRowId
+WHERE HrExists IS NULL;
+
+GO
+
+/************************************************************/
+
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'{databaseOwner}{objectQualifier}SP_UserDefinedTable_GetHrByVacancyId') AND TYPE IN (N'P', N'PC'))
+DROP PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetHrByVacancyId
+GO
+
+CREATE PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetHrByVacancyId
+
+@VacancyId INT,
+@Vacancy_HrFieldId INT,
+@ImageFieldId INT,
+@NameFieldId INT,
+@PositionFieldId INT,
+@EmailFieldId INT,
+@PhoneNumberFieldId INT,
+@TelegramFieldId INT,
+@ViberFieldId INT,
+@ActiveFieldId INT
+
+AS
+
+SELECT
+	Vacancy_HrIdResult.FieldValue AS Id,
+	Files.FileName AS ImageFileName,
+	Folders.FolderPath AS ImageFolderPath,
+	HrNameResult.FieldValue AS Name,
+	HrPositionResult.FieldValue AS Position,
+	HrEmailResult.FieldValue AS Email,
+	HrPhoneResult.FieldValue AS PhoneNumber,
+	HrTelegramResult.FieldValue AS Telegram,
+	HrViberResult.FieldValue AS Viber,
+	HrActiveResult.FieldValue AS Active
+FROM
+	(SELECT *
+	FROM {databaseOwner}{objectQualifier}UserDefinedData
+	WHERE UserDefinedFieldId=@Vacancy_HrFieldId) Vacancy_HrIdResult
+INNER JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@ImageFieldId) ImageFileIDResult
+ON Vacancy_HrIdResult.FieldValue = ImageFileIDResult.UserDefinedRowId
+INNER JOIN
+	{databaseOwner}{objectQualifier}Files Files
+ON CONVERT(INT, RIGHT(ImageFileIDResult.FieldValue, LEN(ImageFileIDResult.FieldValue) - 7)) = Files.FileId
+INNER JOIN
+	{databaseOwner}{objectQualifier}Folders Folders
+ON Files.FolderID = Folders.FolderID
+INNER JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@NameFieldId) HrNameResult
+ON Vacancy_HrIdResult.FieldValue = HrNameResult.UserDefinedRowId
+INNER JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@PositionFieldId) HrPositionResult
+ON Vacancy_HrIdResult.FieldValue = HrPositionResult.UserDefinedRowId
+INNER JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@EmailFieldId) HrEmailResult
+ON Vacancy_HrIdResult.FieldValue = HrEmailResult.UserDefinedRowId
+INNER JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@PhoneNumberFieldId) HrPhoneResult
+ON Vacancy_HrIdResult.FieldValue = HrPhoneResult.UserDefinedRowId
+INNER JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TelegramFieldId) HrTelegramResult
+ON Vacancy_HrIdResult.FieldValue = HrTelegramResult.UserDefinedRowId
+INNER JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@ViberFieldId) HrViberResult
+ON Vacancy_HrIdResult.FieldValue = HrViberResult.UserDefinedRowId
+INNER JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@ActiveFieldId) HrActiveResult
+ON Vacancy_HrIdResult.FieldValue = HrActiveResult.UserDefinedRowId
+WHERE Vacancy_HrIdResult.UserDefinedRowId=@VacancyId;
+
+GO
+
+/************************************************************/
+
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'{databaseOwner}{objectQualifier}SP_UserDefinedTable_GetVacancy') AND TYPE IN (N'P', N'PC'))
+DROP PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetVacancy
+GO
+
+CREATE PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetVacancy
+
+@Id INT,
+@TitleFieldId INT,
+@LocationFieldId INT,
+@DescriptionFieldId INT,
+@RequirementsFieldId INT,
+@WeOfferFieldId INT,
+@WorkingDayFieldId INT,
+@DurationFieldId INT,
+@SalaryFieldId INT,
+@TeamFieldId INT,
+@ActiveFieldId INT,
+@TitleBackImgFieldId INT,
+@SeoKeywordsFieldId INT,
+@SeoDescriptionFieldId INT,
+@HrFieldId INT
+
+AS
+
+SELECT
+	TitleResult.UserDefinedRowId AS Id,
+	TitleResult.FieldValue AS Title,
+	LocationResult.FieldValue AS Location,
+	DescriptionResult.FieldValue AS Description,
+	RequirementsResult.FieldValue AS Requirements,
+	WeOfferResult.FieldValue AS WeOffer,
+	WorkingDayResult.FieldValue AS WorkingDay,
+	DurationResult.FieldValue AS Duration,
+	SalaryResult.FieldValue AS Salary,
+	TeamResult.FieldValue AS Team,
+	ActiveResult.FieldValue AS Active,
+	Files.FileName AS TitleBackImgFileName,
+	Folders.FolderPath AS TitleBackImgFolderPath,
+	SeoKeywordsResult.FieldValue AS SeoKeywords,
+	SeoDescriptionResult.FieldValue AS SeoDescription,
+	HrResult.FieldValue AS Hr
+FROM
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TitleFieldId) TitleResult
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@LocationFieldId) LocationResult
+ON TitleResult.UserDefinedRowId = LocationResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@DescriptionFieldId) DescriptionResult
+ON TitleResult.UserDefinedRowId = DescriptionResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@RequirementsFieldId) RequirementsResult
+ON TitleResult.UserDefinedRowId = RequirementsResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@WeOfferFieldId) WeOfferResult
+ON TitleResult.UserDefinedRowId = WeOfferResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@WorkingDayFieldId) WorkingDayResult
+ON TitleResult.UserDefinedRowId = WorkingDayResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@DurationFieldId) DurationResult
+ON TitleResult.UserDefinedRowId = DurationResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@SalaryFieldId) SalaryResult
+ON TitleResult.UserDefinedRowId = SalaryResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TeamFieldId) TeamResult
+ON TitleResult.UserDefinedRowId = TeamResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@ActiveFieldId) ActiveResult
+ON TitleResult.UserDefinedRowId = ActiveResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TitleBackImgFieldId) TitleBackImgIdResult
+ON TitleResult.UserDefinedRowId = TitleBackImgIdResult.UserDefinedRowId
+LEFT JOIN
+	{databaseOwner}{objectQualifier}Files Files
+ON CONVERT(INT, RIGHT(TitleBackImgIdResult.FieldValue, LEN(TitleBackImgIdResult.FieldValue) - 7)) = Files.FileId
+LEFT JOIN
+	{databaseOwner}{objectQualifier}Folders Folders
+ON Files.FolderID = Folders.FolderID
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@SeoKeywordsFieldId) SeoKeywordsResult
+ON TitleResult.UserDefinedRowId = SeoKeywordsResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@SeoDescriptionFieldId) SeoDescriptionResult
+ON TitleResult.UserDefinedRowId = SeoDescriptionResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@HrFieldId) HrResult
+ON TitleResult.UserDefinedRowId = HrResult.UserDefinedRowId
+WHERE TitleResult.UserDefinedRowId=@Id;
+
+GO
+
+/************************************************************/
+
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'{databaseOwner}{objectQualifier}SP_UserDefinedTable_GetOpenVacancies') AND TYPE IN (N'P', N'PC'))
+DROP PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetOpenVacancies
+GO
+
+CREATE PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetOpenVacancies
+
+@TitleFieldId INT,
+@LocationFieldId INT,
+@DescriptionFieldId INT,
+@RequirementsFieldId INT,
+@WeOfferFieldId INT,
+@WorkingDayFieldId INT,
+@DurationFieldId INT,
+@SalaryFieldId INT,
+@TeamFieldId INT,
+@ActiveFieldId INT,
+@TitleBackImgFieldId INT,
+@SeoKeywordsFieldId INT,
+@SeoDescriptionFieldId INT,
+@HrFieldId INT
+
+AS
+
+SELECT
+	TitleResult.UserDefinedRowId AS Id,
+	TitleResult.FieldValue AS Title,
+	LocationResult.FieldValue AS Location,
+	DescriptionResult.FieldValue AS Description,
+	RequirementsResult.FieldValue AS Requirements,
+	WeOfferResult.FieldValue AS WeOffer,
+	WorkingDayResult.FieldValue AS WorkingDay,
+	DurationResult.FieldValue AS Duration,
+	SalaryResult.FieldValue AS Salary,
+	TeamResult.FieldValue AS Team,
+	ActiveResult.FieldValue AS Active,
+	Files.FileName AS TitleBackImgFileName,
+	Folders.FolderPath AS TitleBackImgFolderPath,
+	SeoKeywordsResult.FieldValue AS SeoKeywords,
+	SeoDescriptionResult.FieldValue AS SeoDescription,
+	HrResult.FieldValue AS Hr
+FROM
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TitleFieldId) TitleResult
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@LocationFieldId) LocationResult
+ON TitleResult.UserDefinedRowId = LocationResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@DescriptionFieldId) DescriptionResult
+ON TitleResult.UserDefinedRowId = DescriptionResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@RequirementsFieldId) RequirementsResult
+ON TitleResult.UserDefinedRowId = RequirementsResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@WeOfferFieldId) WeOfferResult
+ON TitleResult.UserDefinedRowId = WeOfferResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@WorkingDayFieldId) WorkingDayResult
+ON TitleResult.UserDefinedRowId = WorkingDayResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@DurationFieldId) DurationResult
+ON TitleResult.UserDefinedRowId = DurationResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@SalaryFieldId) SalaryResult
+ON TitleResult.UserDefinedRowId = SalaryResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TeamFieldId) TeamResult
+ON TitleResult.UserDefinedRowId = TeamResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@ActiveFieldId) ActiveResult
+ON TitleResult.UserDefinedRowId = ActiveResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TitleBackImgFieldId) TitleBackImgIdResult
+ON TitleResult.UserDefinedRowId = TitleBackImgIdResult.UserDefinedRowId
+LEFT JOIN
+	{databaseOwner}{objectQualifier}Files Files
+ON CONVERT(INT, RIGHT(TitleBackImgIdResult.FieldValue, LEN(TitleBackImgIdResult.FieldValue) - 7)) = Files.FileId
+LEFT JOIN
+	{databaseOwner}{objectQualifier}Folders Folders
+ON Files.FolderID = Folders.FolderID
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@SeoKeywordsFieldId) SeoKeywordsResult
+ON TitleResult.UserDefinedRowId = SeoKeywordsResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@SeoDescriptionFieldId) SeoDescriptionResult
+ON TitleResult.UserDefinedRowId = SeoDescriptionResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@HrFieldId) HrResult
+ON TitleResult.UserDefinedRowId = HrResult.UserDefinedRowId
+WHERE ActiveResult.FieldValue = 'True';
+
+GO
+
+/************************************************************/
+
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'{databaseOwner}{objectQualifier}SP_UserDefinedTable_GetCampsByStatus') AND TYPE IN (N'P', N'PC'))
+DROP PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetCampsByStatus
+GO
+
+CREATE PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetCampsByStatus
+
+@TitleFieldId INT,
+@StartDateFieldId INT,
+@EndDateFieldId INT,
+@DurationFieldId INT,
+@TitleBackImgFieldId INT,
+@AboutCampProgramFieldId INT,
+@AgendaFieldId INT,
+@RecommendedSkillsFieldId INT,
+@WhatWillYouGetFieldId INT,
+@CostFieldId INT,
+@GroupSizeFieldId INT,
+@HrFieldId INT,
+@StatusFieldId INT,
+@SeoKeywordsFieldId INT,
+@SeoDescriptionFieldId INT,
+@Status VARCHAR(MAX)
+
+AS
+
+SELECT
+	TitleResult.UserDefinedRowId AS Id,
+	TitleResult.FieldValue AS Title,
+	StartDateResult.FieldValue AS StartDate,
+	EndDateResult.FieldValue AS EndDate,
+	DurationResult.FieldValue AS Duration,
+	Files.FileName AS TitleBackImgFileName,
+	Folders.FolderPath AS TitleBackImgFolderPath,
+	AboutCampProgramResult.FieldValue AS AboutCampProgram,
+	AgendaResult.FieldValue AS Agenda,
+	RecommendedSkillsResult.FieldValue AS RecommendedSkills,
+	WhatWillYouGetResult.FieldValue AS WhatWillYouGet,
+	CostResult.FieldValue AS Cost,
+	GroupSizeResult.FieldValue AS GroupSize,
+	HrResult.FieldValue AS Hr,
+	StatusResult.FieldValue AS Status,
+	SeoKeywordsResult.FieldValue AS SeoKeywords,
+	SeoDescriptionResult.FieldValue AS SeoDescription
+FROM
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TitleFieldId) TitleResult
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@StartDateFieldId) StartDateResult
+ON TitleResult.UserDefinedRowId = StartDateResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@EndDateFieldId) EndDateResult
+ON TitleResult.UserDefinedRowId = EndDateResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@DurationFieldId) DurationResult
+ON TitleResult.UserDefinedRowId = DurationResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TitleBackImgFieldId) TitleBackImgIdResult
+ON TitleResult.UserDefinedRowId = TitleBackImgIdResult.UserDefinedRowId
+LEFT JOIN
+	{databaseOwner}{objectQualifier}Files Files
+ON CONVERT(INT, RIGHT(TitleBackImgIdResult.FieldValue, LEN(TitleBackImgIdResult.FieldValue) - 7)) = Files.FileId
+LEFT JOIN
+	{databaseOwner}{objectQualifier}Folders Folders
+ON Files.FolderID = Folders.FolderID
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@AboutCampProgramFieldId) AboutCampProgramResult
+ON TitleResult.UserDefinedRowId = AboutCampProgramResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@AgendaFieldId) AgendaResult
+ON TitleResult.UserDefinedRowId = AgendaResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@RecommendedSkillsFieldId) RecommendedSkillsResult
+ON TitleResult.UserDefinedRowId = RecommendedSkillsResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@WhatWillYouGetFieldId) WhatWillYouGetResult
+ON TitleResult.UserDefinedRowId = WhatWillYouGetResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@CostFieldId) CostResult
+ON TitleResult.UserDefinedRowId = CostResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@GroupSizeFieldId) GroupSizeResult
+ON TitleResult.UserDefinedRowId = GroupSizeResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@HrFieldId) HrResult
+ON TitleResult.UserDefinedRowId = HrResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@StatusFieldId) StatusResult
+ON TitleResult.UserDefinedRowId = StatusResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@SeoKeywordsFieldId) SeoKeywordsResult
+ON TitleResult.UserDefinedRowId = SeoKeywordsResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@SeoDescriptionFieldId) SeoDescriptionResult
+ON TitleResult.UserDefinedRowId = SeoDescriptionResult.UserDefinedRowId
+WHERE StatusResult.FieldValue = @Status;
+
+GO
+
+/************************************************************/
+
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'{databaseOwner}{objectQualifier}SP_UserDefinedTable_GetCampsForPaginator') AND TYPE IN (N'P', N'PC'))
+DROP PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetCampsForPaginator
+GO
+
+CREATE PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetCampsForPaginator
+
+@TitleFieldId INT,
+@StartDateFieldId INT,
+@EndDateFieldId INT,
+@DurationFieldId INT,
+@TitleBackImgFieldId INT,
+@AboutCampProgramFieldId INT,
+@AgendaFieldId INT,
+@RecommendedSkillsFieldId INT,
+@WhatWillYouGetFieldId INT,
+@CostFieldId INT,
+@GroupSizeFieldId INT,
+@HrFieldId INT,
+@StatusFieldId INT,
+@SeoKeywordsFieldId INT,
+@SeoDescriptionFieldId INT,
+@PageNumber INT = 1,
+@PageSize INT = 20
+
+AS
+
+SELECT
+	TitleResult.UserDefinedRowId AS Id,
+	TitleResult.FieldValue AS Title,
+	StartDateResult.FieldValue AS StartDate,
+	EndDateResult.FieldValue AS EndDate,
+	DurationResult.FieldValue AS Duration,
+	Files.FileName AS TitleBackImgFileName,
+	Folders.FolderPath AS TitleBackImgFolderPath,
+	AboutCampProgramResult.FieldValue AS AboutCampProgram,
+	AgendaResult.FieldValue AS Agenda,
+	RecommendedSkillsResult.FieldValue AS RecommendedSkills,
+	WhatWillYouGetResult.FieldValue AS WhatWillYouGet,
+	CostResult.FieldValue AS Cost,
+	GroupSizeResult.FieldValue AS GroupSize,
+	HrResult.FieldValue AS Hr,
+	StatusResult.FieldValue AS Status,
+	SeoKeywordsResult.FieldValue AS SeoKeywords,
+	SeoDescriptionResult.FieldValue AS SeoDescription,
+	COUNT(1) OVER() AS TotalRecords
+FROM
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TitleFieldId) TitleResult
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@StartDateFieldId) StartDateResult
+ON TitleResult.UserDefinedRowId = StartDateResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@EndDateFieldId) EndDateResult
+ON TitleResult.UserDefinedRowId = EndDateResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@DurationFieldId) DurationResult
+ON TitleResult.UserDefinedRowId = DurationResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TitleBackImgFieldId) TitleBackImgIdResult
+ON TitleResult.UserDefinedRowId = TitleBackImgIdResult.UserDefinedRowId
+LEFT JOIN
+	{databaseOwner}{objectQualifier}Files Files
+ON CONVERT(INT, RIGHT(TitleBackImgIdResult.FieldValue, LEN(TitleBackImgIdResult.FieldValue) - 7)) = Files.FileId
+LEFT JOIN
+	{databaseOwner}{objectQualifier}Folders Folders
+ON Files.FolderID = Folders.FolderID
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@AboutCampProgramFieldId) AboutCampProgramResult
+ON TitleResult.UserDefinedRowId = AboutCampProgramResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@AgendaFieldId) AgendaResult
+ON TitleResult.UserDefinedRowId = AgendaResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@RecommendedSkillsFieldId) RecommendedSkillsResult
+ON TitleResult.UserDefinedRowId = RecommendedSkillsResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@WhatWillYouGetFieldId) WhatWillYouGetResult
+ON TitleResult.UserDefinedRowId = WhatWillYouGetResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@CostFieldId) CostResult
+ON TitleResult.UserDefinedRowId = CostResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@GroupSizeFieldId) GroupSizeResult
+ON TitleResult.UserDefinedRowId = GroupSizeResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@HrFieldId) HrResult
+ON TitleResult.UserDefinedRowId = HrResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@StatusFieldId) StatusResult
+ON TitleResult.UserDefinedRowId = StatusResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@SeoKeywordsFieldId) SeoKeywordsResult
+ON TitleResult.UserDefinedRowId = SeoKeywordsResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@SeoDescriptionFieldId) SeoDescriptionResult
+ON TitleResult.UserDefinedRowId = SeoDescriptionResult.UserDefinedRowId
+ORDER BY
+	StatusResult.FieldValue DESC,
+	StartDateResult.FieldValue DESC
+OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH FIRST @PageSize ROWS ONLY;
+
+GO
+
+/************************************************************/
+
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'{databaseOwner}{objectQualifier}SP_UserDefinedTable_GetFolderPath') AND TYPE IN (N'P', N'PC'))
+DROP PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetFolderPath
+GO
+
+CREATE PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetFolderPath
+
+@FolderId INT
+
+AS
+
+SELECT * FROM {databaseOwner}{objectQualifier}Folders WHERE FolderID=@FolderId;
+
+GO
+
+/************************************************************/
+
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'{databaseOwner}{objectQualifier}SP_UserDefinedTable_GetCamp') AND TYPE IN (N'P', N'PC'))
+DROP PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetCamp
+GO
+
+CREATE PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetCamp
+
+@CampId INT,
+@TitleFieldId INT,
+@StartDateFieldId INT,
+@EndDateFieldId INT,
+@DurationFieldId INT,
+@TitleBackImgFieldId INT,
+@AboutCampProgramFieldId INT,
+@AgendaFieldId INT,
+@RecommendedSkillsFieldId INT,
+@WhatWillYouGetFieldId INT,
+@CostFieldId INT,
+@GroupSizeFieldId INT,
+@HrFieldId INT,
+@StatusFieldId INT,
+@SeoKeywordsFieldId INT,
+@SeoDescriptionFieldId INT
+
+AS
+
+SELECT
+	TitleResult.UserDefinedRowId AS Id,
+	TitleResult.FieldValue AS Title,
+	StartDateResult.FieldValue AS StartDate,
+	EndDateResult.FieldValue AS EndDate,
+	DurationResult.FieldValue AS Duration,
+	Files.FileName AS TitleBackImgFileName,
+	Folders.FolderPath AS TitleBackImgFolderPath,
+	AboutCampProgramResult.FieldValue AS AboutCampProgram,
+	AgendaResult.FieldValue AS Agenda,
+	RecommendedSkillsResult.FieldValue AS RecommendedSkills,
+	WhatWillYouGetResult.FieldValue AS WhatWillYouGet,
+	CostResult.FieldValue AS Cost,
+	GroupSizeResult.FieldValue AS GroupSize,
+	HrResult.FieldValue AS Hr,
+	StatusResult.FieldValue AS Status,
+	SeoKeywordsResult.FieldValue AS SeoKeywords,
+	SeoDescriptionResult.FieldValue AS SeoDescription
+FROM
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TitleFieldId) TitleResult
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@StartDateFieldId) StartDateResult
+ON TitleResult.UserDefinedRowId = StartDateResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@EndDateFieldId) EndDateResult
+ON TitleResult.UserDefinedRowId = EndDateResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@DurationFieldId) DurationResult
+ON TitleResult.UserDefinedRowId = DurationResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TitleBackImgFieldId) TitleBackImgIdResult
+ON TitleResult.UserDefinedRowId = TitleBackImgIdResult.UserDefinedRowId
+LEFT JOIN
+	{databaseOwner}{objectQualifier}Files Files
+ON CONVERT(INT, RIGHT(TitleBackImgIdResult.FieldValue, LEN(TitleBackImgIdResult.FieldValue) - 7)) = Files.FileId
+LEFT JOIN
+	{databaseOwner}{objectQualifier}Folders Folders
+ON Files.FolderID = Folders.FolderID
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@AboutCampProgramFieldId) AboutCampProgramResult
+ON TitleResult.UserDefinedRowId = AboutCampProgramResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@AgendaFieldId) AgendaResult
+ON TitleResult.UserDefinedRowId = AgendaResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@RecommendedSkillsFieldId) RecommendedSkillsResult
+ON TitleResult.UserDefinedRowId = RecommendedSkillsResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@WhatWillYouGetFieldId) WhatWillYouGetResult
+ON TitleResult.UserDefinedRowId = WhatWillYouGetResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@CostFieldId) CostResult
+ON TitleResult.UserDefinedRowId = CostResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@GroupSizeFieldId) GroupSizeResult
+ON TitleResult.UserDefinedRowId = GroupSizeResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@HrFieldId) HrResult
+ON TitleResult.UserDefinedRowId = HrResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@StatusFieldId) StatusResult
+ON TitleResult.UserDefinedRowId = StatusResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@SeoKeywordsFieldId) SeoKeywordsResult
+ON TitleResult.UserDefinedRowId = SeoKeywordsResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@SeoDescriptionFieldId) SeoDescriptionResult
+ON TitleResult.UserDefinedRowId = SeoDescriptionResult.UserDefinedRowId
+WHERE TitleResult.UserDefinedRowId = @CampId;
+
+GO
+
+/************************************************************/
+
+IF  EXISTS (SELECT * FROM sys.objects WHERE object_id = OBJECT_ID(N'{databaseOwner}{objectQualifier}SP_UserDefinedTable_GetHrByCampId') AND TYPE IN (N'P', N'PC'))
+DROP PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetHrByCampId
+GO
+
+CREATE PROCEDURE {databaseOwner}{objectQualifier}SP_UserDefinedTable_GetHrByCampId
+
+@CampId INT,
+@Camp_HrFieldId INT,
+@ImageFieldId INT,
+@NameFieldId INT,
+@PositionFieldId INT,
+@EmailFieldId INT,
+@PhoneNumberFieldId INT,
+@TelegramFieldId INT,
+@ViberFieldId INT,
+@ActiveFieldId INT
+
+AS
+
+SELECT
+	Camp_HrIdResult.UserDefinedRowId AS Camp_HrIdResult_UserDefinedRowId,
+	Camp_HrIdResult.FieldValue AS Id,
+	Files.FileName AS ImageFileName,
+	Folders.FolderPath AS ImageFolderPath,
+	HrNameResult.FieldValue AS Name,
+	HrPositionResult.FieldValue AS Position,
+	HrEmailResult.FieldValue AS Email,
+	HrPhoneResult.FieldValue AS PhoneNumber,
+	HrTelegramResult.FieldValue AS Telegram,
+	HrViberResult.FieldValue AS Viber,
+	HrActiveResult.FieldValue AS Active
+FROM
+	(SELECT *
+	FROM {databaseOwner}{objectQualifier}UserDefinedData
+	WHERE UserDefinedFieldId=@Camp_HrFieldId) Camp_HrIdResult
+INNER JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@ImageFieldId) ImageFileIDResult
+ON Camp_HrIdResult.FieldValue = ImageFileIDResult.UserDefinedRowId
+LEFT JOIN
+	{databaseOwner}{objectQualifier}Files Files
+ON CONVERT(INT, RIGHT(ImageFileIDResult.FieldValue, LEN(ImageFileIDResult.FieldValue) - 7)) = Files.FileId
+LEFT JOIN
+	{databaseOwner}{objectQualifier}Folders Folders
+ON Files.FolderID = Folders.FolderID
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@NameFieldId) HrNameResult
+ON Camp_HrIdResult.FieldValue = HrNameResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@PositionFieldId) HrPositionResult
+ON Camp_HrIdResult.FieldValue = HrPositionResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@EmailFieldId) HrEmailResult
+ON Camp_HrIdResult.FieldValue = HrEmailResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@PhoneNumberFieldId) HrPhoneResult
+ON Camp_HrIdResult.FieldValue = HrPhoneResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@TelegramFieldId) HrTelegramResult
+ON Camp_HrIdResult.FieldValue = HrTelegramResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@ViberFieldId) HrViberResult
+ON Camp_HrIdResult.FieldValue = HrViberResult.UserDefinedRowId
+LEFT JOIN
+	(SELECT * FROM {databaseOwner}{objectQualifier}UserDefinedData WHERE UserDefinedFieldId=@ActiveFieldId) HrActiveResult
+ON Camp_HrIdResult.FieldValue = HrActiveResult.UserDefinedRowId
+WHERE Camp_HrIdResult.UserDefinedRowId=@CampId;
+
+GO
+
+/************************************************************/
+/************************************************************/
+/************************************************************/
